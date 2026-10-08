@@ -20,7 +20,9 @@ abstract final class AppColors {
   static const Color boamp = Color(0xFF3B82F6);
   static const Color ted = Color(0xFF10B981);
   static const Color linkedIn = Color(0xFF0A66C2);
-  static const Color x = Color(0xFF475569);
+  /// Clair plutôt que gris ardoise : sur le fond sombre, un interrupteur X
+  /// activé se confondait avec un interrupteur désactivé.
+  static const Color x = Color(0xFFCBD5E1);
 
   static const LinearGradient userBubble = LinearGradient(
     colors: [primary, primaryDeep],

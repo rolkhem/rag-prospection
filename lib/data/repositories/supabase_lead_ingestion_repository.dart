@@ -51,6 +51,7 @@ class SupabaseLeadIngestionRepository implements LeadIngestionRepository {
               status: _status(row['status']),
               fetched: _int(row['fetched']),
               inserted: _int(row['inserted']),
+              remaining: _int(row['remaining']),
               message: row['message'] is String ? row['message'] as String : null,
             ),
           )
@@ -67,6 +68,7 @@ class SupabaseLeadIngestionRepository implements LeadIngestionRepository {
 
   static SourceSyncStatus _status(Object? raw) => switch (raw) {
         'ok' => SourceSyncStatus.ok,
+        'partial' => SourceSyncStatus.partial,
         'cooldown' => SourceSyncStatus.cooldown,
         'unsupported' => SourceSyncStatus.unsupported,
         _ => SourceSyncStatus.error,

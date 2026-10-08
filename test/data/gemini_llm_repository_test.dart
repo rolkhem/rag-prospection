@@ -65,6 +65,47 @@ void main() {
     expect((result as Err<String>).failure, isA<ServerFailure>());
   });
 
+  test('bascule sur le modèle de repli quand le principal est saturé', () async {
+    final calledModels = <String>[];
+    final repository = _repository((request) async {
+      calledModels.add(request.url.pathSegments.last);
+      if (calledModels.length == 1) {
+        return _json({'error': {'code': 503, 'status': 'UNAVAILABLE'}}, 503);
+      }
+      return _json({
+        'candidates': [
+          {
+            'content': {
+              'parts': [
+                {'text': 'Réponse de repli'},
+              ],
+            },
+          },
+        ],
+      });
+    });
+
+    final result = await repository.generate(systemInstruction: 's', userPrompt: 'u');
+
+    expect((result as Ok<String>).value, 'Réponse de repli');
+    expect(calledModels, [
+      'gemini-2.5-flash:generateContent',
+      'gemini-flash-latest:generateContent',
+    ]);
+  });
+
+  test('ne bascule pas sur une erreur non transitoire', () async {
+    var calls = 0;
+    final repository = _repository((_) async {
+      calls++;
+      return _json({'error': 'bad request'}, 400);
+    });
+
+    await repository.generate(systemInstruction: 's', userPrompt: 'u');
+
+    expect(calls, 1);
+  });
+
   test('traduit un 403 en erreur de configuration', () async {
     final repository = _repository((_) async => _json({'error': 'denied'}, 403));
 

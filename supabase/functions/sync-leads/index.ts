@@ -16,6 +16,13 @@ const EMBEDDING_MODEL = Deno.env.get("GEMINI_EMBEDDING_MODEL") ?? "gemini-embedd
 const EMBEDDING_DIMENSIONS = 768;
 const EMBEDDING_BATCH_SIZE = 100;
 
+// Chaque texte d'un `batchEmbedContents` compte comme une requête : le niveau
+// gratuit Gemini (~100/min) refuse un second lot de 100 dans la même minute.
+// Le budget par appel reste sous ce plafond et est réparti entre les sources ;
+// les avis restants sont traités aux synchronisations suivantes. À relever
+// (secret EMBEDDING_BUDGET) avec un projet Gemini payant.
+const EMBEDDING_BUDGET = Number(Deno.env.get("EMBEDDING_BUDGET") ?? "90");
+
 const LOOKBACK_DAYS = 30;
 const MAX_LEADS_PER_SOURCE = 200;
 const SYNC_COOLDOWN_MINUTES = 15;
@@ -24,7 +31,7 @@ const FETCH_TIMEOUT_MS = 20_000;
 type Source = "boamp" | "ted" | "linkedin" | "x";
 const ALL_SOURCES: readonly Source[] = ["boamp", "ted", "linkedin", "x"];
 
-type SyncStatus = "ok" | "cooldown" | "unsupported" | "error";
+type SyncStatus = "ok" | "partial" | "cooldown" | "unsupported" | "error";
 
 interface LeadRow {
   id: string;
@@ -46,8 +53,13 @@ interface SourceResult {
   status: SyncStatus;
   fetched: number;
   inserted: number;
+  /** Avis récupérés mais pas encore vectorisés (budget ou quota atteint). */
+  remaining: number;
   message?: string;
 }
+
+/** Quota Gemini dépassé : arrêt propre, le reste attendra le prochain appel. */
+class QuotaExceededError extends Error {}
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -76,9 +88,11 @@ Deno.serve(async (req) => {
 
   // Séquentiel : les API publiques (TED en particulier) limitent le nombre
   // de requêtes simultanées, et le volume reste faible.
+  const connectable = requested.filter((s) => FETCHERS[s]).length;
+  const budgetPerSource = Math.max(1, Math.floor(EMBEDDING_BUDGET / Math.max(1, connectable)));
   const results: SourceResult[] = [];
   for (const source of requested) {
-    results.push(await syncSource(supabase, source, geminiKey));
+    results.push(await syncSource(supabase, source, geminiKey, budgetPerSource));
   }
 
   return json({ results }, 200);
@@ -88,6 +102,7 @@ async function syncSource(
   supabase: SupabaseClient,
   source: Source,
   geminiKey: string,
+  embeddingBudget: number,
 ): Promise<SourceResult> {
   const fetcher = FETCHERS[source];
   if (!fetcher) {
@@ -96,10 +111,13 @@ async function syncSource(
       status: "unsupported",
       fetched: 0,
       inserted: 0,
+      remaining: 0,
       message: "Aucun connecteur disponible : cette source n'expose pas d'API publique exploitable.",
     };
   }
 
+  let fetched = 0;
+  let inserted = 0;
   try {
     const { data: lastRun, error: runError } = await supabase
       .from("source_sync_runs")
@@ -116,12 +134,14 @@ async function syncSource(
           status: "cooldown",
           fetched: 0,
           inserted: 0,
+          remaining: 0,
           message: `Déjà synchronisée il y a moins de ${SYNC_COOLDOWN_MINUTES} minutes.`,
         };
       }
     }
 
     const leads = dedupe(await fetcher());
+    fetched = leads.length;
 
     // Seuls les leads absents de l'index sont vectorisés : c'est l'appel
     // facturé, et un avis publié ne change pas de contenu.
@@ -133,9 +153,16 @@ async function syncSource(
     }
     const fresh = leads.filter((l) => !existing.has(l.id));
 
-    let inserted = 0;
-    for (const batch of chunk(fresh, EMBEDDING_BATCH_SIZE)) {
-      const vectors = await embedDocuments(batch.map(toEmbeddingText), geminiKey);
+    let quotaHit = false;
+    for (const batch of chunk(fresh.slice(0, embeddingBudget), EMBEDDING_BATCH_SIZE)) {
+      let vectors: number[][];
+      try {
+        vectors = await embedDocuments(batch.map(toEmbeddingText), geminiKey);
+      } catch (error) {
+        if (!(error instanceof QuotaExceededError)) throw error;
+        quotaHit = true;
+        break;
+      }
       const rows = batch.map((lead, i) => ({
         ...lead,
         embedding: JSON.stringify(vectors[i]),
@@ -146,6 +173,22 @@ async function syncSource(
       inserted += rows.length;
     }
 
+    const remaining = fresh.length - inserted;
+    if (remaining > 0) {
+      // Pas d'enregistrement du run : le délai de grâce ne doit pas empêcher
+      // de reprendre là où la vectorisation s'est arrêtée.
+      return {
+        source,
+        status: "partial",
+        fetched,
+        inserted,
+        remaining,
+        message: quotaHit
+          ? "Quota Gemini atteint : relancez dans une minute pour continuer."
+          : "Relancez dans une minute pour vectoriser les avis restants.",
+      };
+    }
+
     const { error: upsertRunError } = await supabase.from("source_sync_runs").upsert({
       source,
       last_synced_at: new Date().toISOString(),
@@ -153,14 +196,16 @@ async function syncSource(
     });
     if (upsertRunError) throw upsertRunError;
 
-    return { source, status: "ok", fetched: leads.length, inserted };
+    return { source, status: "ok", fetched, inserted, remaining: 0 };
   } catch (error) {
     console.error(`sync ${source}`, error);
     return {
       source,
       status: "error",
-      fetched: 0,
-      inserted: 0,
+      fetched,
+      // Les lots déjà insérés restent dans l'index : on le signale.
+      inserted,
+      remaining: 0,
       message: "La synchronisation a échoué. Réessayez plus tard.",
     };
   }
@@ -375,6 +420,9 @@ function parseSources(payload: unknown): Source[] {
 // deno-lint-ignore no-explicit-any
 async function fetchJson(url: URL, init: RequestInit = {}): Promise<any> {
   const response = await fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  if (response.status === 429) {
+    throw new QuotaExceededError(`${url.host} : quota dépassé (429).`);
+  }
   if (!response.ok) {
     throw new Error(`${url.host} a répondu ${response.status} : ${(await response.text()).slice(0, 300)}`);
   }

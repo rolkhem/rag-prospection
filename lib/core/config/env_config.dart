@@ -46,7 +46,7 @@ final class EnvConfig {
 
     return EnvConfig._(
       geminiApiKey: _require('GEMINI_API_KEY'),
-      geminiChatModel: _optional('GEMINI_CHAT_MODEL', 'gemini-2.5-flash'),
+      geminiChatModel: _optional('GEMINI_CHAT_MODEL', 'gemini-3.5-flash'),
       geminiEmbeddingModel: _optional('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001'),
       supabaseUrl: supabaseUrl,
       supabaseAnonKey: _require('SUPABASE_ANON_KEY'),

@@ -80,4 +80,25 @@ void main() {
 
     expect(find.text('+4 nouveaux leads'), findsOneWidget);
   });
+
+  testWidgets('signale une synchronisation partielle avec les avis restants', (tester) async {
+    when(() => ingestion.synchronize(any())).thenAnswer(
+      (_) async => const Ok([
+        SourceSyncResult(
+          source: LeadSource.boamp,
+          status: SourceSyncStatus.partial,
+          fetched: 200,
+          inserted: 45,
+          remaining: 155,
+          message: 'Quota Gemini atteint : relancez dans une minute pour continuer.',
+        ),
+      ]),
+    );
+    await pumpScreen(tester);
+
+    await tester.tap(find.byKey(const Key('sources_sync_button')));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('+45 · 155 restants'), findsOneWidget);
+  });
 }

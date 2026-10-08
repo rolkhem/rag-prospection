@@ -250,6 +250,12 @@ class _SyncResultLine extends StatelessWidget {
               ? 'À jour (${result.fetched} avis vérifiés)'
               : '+${result.inserted} nouveau${result.inserted > 1 ? 'x' : ''} lead${result.inserted > 1 ? 's' : ''}',
         ),
+      SourceSyncStatus.partial => (
+          AppColors.warning,
+          Icons.timelapse_rounded,
+          '+${result.inserted} · ${result.remaining} restant${result.remaining > 1 ? 's' : ''}. '
+              '${result.message ?? 'Relancez dans une minute.'}',
+        ),
       SourceSyncStatus.cooldown => (
           AppColors.textSecondary,
           Icons.schedule_rounded,
@@ -336,6 +342,15 @@ class _SyncBar extends StatelessWidget {
                   width: double.infinity,
                   child: FilledButton.icon(
                     key: const Key('sources_sync_button'),
+                    // Pendant la synchro, le bouton reste désactivé mais garde
+                    // sa couleur : le gris par défaut rendait l'indicateur
+                    // blanc illisible et faisait croire à un bouton inactif.
+                    style: state.isSyncing
+                        ? FilledButton.styleFrom(
+                            disabledBackgroundColor: AppColors.primary.withValues(alpha: 0.6),
+                            disabledForegroundColor: Colors.white,
+                          )
+                        : null,
                     onPressed: state.canSync
                         ? () => context.read<SourcesBloc>().add(const SourcesSyncRequested())
                         : null,

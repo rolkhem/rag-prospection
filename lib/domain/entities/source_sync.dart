@@ -23,6 +23,10 @@ class SourceStats extends Equatable {
 enum SourceSyncStatus {
   ok,
 
+  /// Une partie seulement des avis a été vectorisée (budget ou quota
+  /// d'embeddings atteint) : relancer pour continuer.
+  partial,
+
   /// Synchronisée trop récemment : le serveur borne la fréquence pour
   /// limiter le coût des embeddings.
   cooldown,
@@ -38,6 +42,7 @@ class SourceSyncResult extends Equatable {
     required this.status,
     required this.fetched,
     required this.inserted,
+    this.remaining = 0,
     this.message,
   });
 
@@ -45,8 +50,9 @@ class SourceSyncResult extends Equatable {
   final SourceSyncStatus status;
   final int fetched;
   final int inserted;
+  final int remaining;
   final String? message;
 
   @override
-  List<Object?> get props => [source, status, fetched, inserted, message];
+  List<Object?> get props => [source, status, fetched, inserted, remaining, message];
 }
