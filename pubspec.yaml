@@ -1,0 +1,33 @@
+name: rag_prospection
+description: Application Flutter RAG de prospection B2B (appels d'offres publics + signaux sociaux).
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+  flutter: ">=3.38.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  bloc_concurrency: ^0.3.0
+  equatable: ^2.0.7
+  flutter_bloc: ^9.1.0
+  flutter_dotenv: ^5.2.1
+  get_it: ^8.0.3
+  http: ^1.2.2
+  url_launcher: ^6.3.1
+  uuid: ^4.5.1
+  shared_preferences: ^2.5.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  bloc_test: ^10.0.0
+  flutter_lints: ^5.0.0
+  mocktail: ^1.0.4
+
+flutter:
+  uses-material-design: true
+  assets:
+    - .env
