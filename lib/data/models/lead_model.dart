@@ -8,6 +8,7 @@ extension LeadSourceWire on LeadSource {
   String get wireValue => switch (this) {
         LeadSource.boamp => 'boamp',
         LeadSource.ted => 'ted',
+        LeadSource.decp => 'decp',
         LeadSource.linkedIn => 'linkedin',
         LeadSource.x => 'x',
       };
@@ -17,6 +18,7 @@ extension LeadSourceWire on LeadSource {
     return switch (value) {
       'boamp' => LeadSource.boamp,
       'ted' => LeadSource.ted,
+      'decp' => LeadSource.decp,
       'linkedin' => LeadSource.linkedIn,
       'x' || 'twitter' => LeadSource.x,
       // Pas de valeur par défaut : étiqueter un post X comme « BOAMP »

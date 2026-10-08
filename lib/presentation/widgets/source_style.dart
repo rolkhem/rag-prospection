@@ -9,6 +9,7 @@ extension LeadSourceStyle on LeadSource {
   Color get color => switch (this) {
         LeadSource.boamp => AppColors.boamp,
         LeadSource.ted => AppColors.ted,
+        LeadSource.decp => AppColors.decp,
         LeadSource.linkedIn => AppColors.linkedIn,
         LeadSource.x => AppColors.x,
       };
@@ -16,6 +17,7 @@ extension LeadSourceStyle on LeadSource {
   IconData get icon => switch (this) {
         LeadSource.boamp => Icons.account_balance_rounded,
         LeadSource.ted => Icons.public_rounded,
+        LeadSource.decp => Icons.autorenew_rounded,
         LeadSource.linkedIn => Icons.work_rounded,
         LeadSource.x => Icons.alternate_email_rounded,
       };

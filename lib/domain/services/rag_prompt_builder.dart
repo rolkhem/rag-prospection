@@ -25,7 +25,7 @@ class RagPromptBuilder {
   final int maxCharsPerDocument;
 
   static const String _systemInstruction = '''
-Tu es un analyste en développement commercial B2B spécialisé dans la détection d'opportunités : marchés publics (BOAMP, TED) et signaux d'achat sur les réseaux sociaux (LinkedIn, X).
+Tu es un analyste en développement commercial B2B spécialisé dans la détection d'opportunités : marchés publics ouverts (BOAMP, TED), marchés attribués arrivant à échéance (DECP) et signaux d'achat sur les réseaux sociaux (LinkedIn, X).
 
 Règles impératives :
 1. Réponds UNIQUEMENT à partir des documents fournis entre balises <document>. N'invente aucune organisation, aucun montant, aucune date.
@@ -38,7 +38,8 @@ Règles impératives :
    - un niveau de qualification (Fort / Moyen / Faible) justifié en une phrase ;
    - la prochaine action commerciale recommandée.
 6. Classe les opportunités de la plus prometteuse à la moins prometteuse.
-7. Réponds en français, de façon concise et structurée.''';
+7. Un document de type « Marché attribué » n'est PAS une consultation ouverte : présente-le comme un renouvellement à anticiper (titulaire actuel, fin estimée) et recommande une action d'avant-vente auprès de l'acheteur, jamais « répondre à l'appel d'offres ».
+8. Réponds en français, de façon concise et structurée.''';
 
   RagPrompt build({
     required String question,
@@ -94,7 +95,12 @@ Question du commercial : ${_sanitize(question)}''';
     if (region != null) buffer.writeln('Région : ${_sanitize(region)}');
     if (sector != null) buffer.writeln('Secteur : ${_sanitize(sector)}');
     if (budget != null) buffer.writeln('Budget estimé : ${budget.toStringAsFixed(0)} € HT');
-    if (deadline != null) buffer.writeln('Date limite : ${_formatDate(deadline)}');
+    if (deadline != null) {
+      final label = lead.source.category == LeadCategory.awardedContract
+          ? 'Fin de marché estimée'
+          : 'Date limite';
+      buffer.writeln('$label : ${_formatDate(deadline)}');
+    }
 
     buffer
       ..writeln('Publié le : ${_formatDate(lead.publishedAt)}')

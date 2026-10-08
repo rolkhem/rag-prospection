@@ -23,16 +23,27 @@ Flux d'une question : embedding Gemini (`RETRIEVAL_QUERY`, 768 dim.) →
 prompt augmenté → Gemini.
 
 Flux d'ingestion : bouton « Synchroniser » → Edge Function `sync-leads` →
-API BOAMP (Opendatasoft) et TED Search v3 → embeddings `RETRIEVAL_DOCUMENT` →
-upsert avec la clé service_role.
+connecteurs → embeddings `RETRIEVAL_DOCUMENT` → upsert avec la clé service_role.
+
+| Source | API | Contenu |
+|---|---|---|
+| BOAMP | Opendatasoft DILA | Avis de marché français ouverts (30 derniers jours) |
+| TED | TED Search v3 | Avis européens, acheteurs français |
+| DECP | Opendatasoft data.economie.gouv.fr + Recherche d'entreprises | Marchés **attribués** dont la fin estimée tombe dans 3 à 12 mois : renouvellements à anticiper. Couvre aussi les marchés passés via Maximilien, AWS-Achat, Achatpublic, Marchés Sécurisés, e-marchespublics… |
+
+Pour ajouter une source : un connecteur dans `FETCHERS`
+(`supabase/functions/sync-leads/index.ts`), une migration qui l'autorise dans
+les contraintes `check` et `lead_source_stats`, puis une valeur dans l'enum
+`LeadSource` (+ `wireValue`, couleur et icône dans `source_style.dart`).
 
 ## Mise en place
 
 ### 1. Supabase
 
 1. Créer un projet sur supabase.com.
-2. Appliquer la migration : SQL Editor → coller
-   `supabase/migrations/20261008000000_create_leads.sql`, ou avec la CLI :
+2. Appliquer les migrations **dans l'ordre** : SQL Editor → coller
+   `supabase/migrations/20261008000000_create_leads.sql`, puis
+   `20261008100000_add_decp_source.sql`, ou avec la CLI :
    `supabase link --project-ref <ref>` puis `supabase db push`.
 3. Déployer l'Edge Function :
 

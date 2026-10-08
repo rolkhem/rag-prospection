@@ -183,7 +183,7 @@ class _ChatAppBar extends StatelessWidget implements PreferredSizeWidget {
                 style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
               ),
               Text(
-                'BOAMP · TED · LinkedIn · X',
+                'BOAMP · TED · DECP · LinkedIn · X',
                 style: TextStyle(fontSize: 11, color: AppColors.textSecondary),
               ),
             ],

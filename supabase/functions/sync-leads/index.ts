@@ -28,8 +28,20 @@ const MAX_LEADS_PER_SOURCE = 200;
 const SYNC_COOLDOWN_MINUTES = 15;
 const FETCH_TIMEOUT_MS = 20_000;
 
-type Source = "boamp" | "ted" | "linkedin" | "x";
-const ALL_SOURCES: readonly Source[] = ["boamp", "ted", "linkedin", "x"];
+type Source = "boamp" | "ted" | "decp" | "linkedin" | "x";
+const ALL_SOURCES: readonly Source[] = ["boamp", "ted", "decp", "linkedin", "x"];
+
+/**
+ * Contexte fourni aux connecteurs. Les sources volumineuses (DECP : des
+ * dizaines de milliers de marchés) s'en servent pour paginer jusqu'à trouver
+ * `wanted` leads absents de l'index, et n'enrichir que ceux-là.
+ */
+interface FetchContext {
+  wanted: number;
+  knownIds(ids: string[]): Promise<Set<string>>;
+}
+
+type Fetcher = (ctx: FetchContext) => Promise<LeadRow[]>;
 
 type SyncStatus = "ok" | "partial" | "cooldown" | "unsupported" | "error";
 
@@ -140,17 +152,22 @@ async function syncSource(
       }
     }
 
-    const leads = dedupe(await fetcher());
+    const knownIds = async (ids: string[]): Promise<Set<string>> => {
+      const known = new Set<string>();
+      for (const part of chunk(ids, 200)) {
+        const { data, error } = await supabase.from("leads").select("id").in("id", part);
+        if (error) throw error;
+        for (const row of data) known.add(row.id as string);
+      }
+      return known;
+    };
+
+    const leads = dedupe(await fetcher({ wanted: embeddingBudget, knownIds }));
     fetched = leads.length;
 
     // Seuls les leads absents de l'index sont vectorisés : c'est l'appel
     // facturé, et un avis publié ne change pas de contenu.
-    const existing = new Set<string>();
-    for (const ids of chunk(leads.map((l) => l.id), 200)) {
-      const { data, error } = await supabase.from("leads").select("id").in("id", ids);
-      if (error) throw error;
-      for (const row of data) existing.add(row.id as string);
-    }
+    const existing = await knownIds(leads.map((l) => l.id));
     const fresh = leads.filter((l) => !existing.has(l.id));
 
     let quotaHit = false;
@@ -215,9 +232,10 @@ async function syncSource(
 // Connecteurs
 // ---------------------------------------------------------------------------
 
-const FETCHERS: Partial<Record<Source, () => Promise<LeadRow[]>>> = {
+const FETCHERS: Partial<Record<Source, Fetcher>> = {
   boamp: fetchBoamp,
   ted: fetchTed,
+  decp: fetchDecpRenewals,
   // LinkedIn et X n'offrent pas d'API de recherche publique ; le scraping
   // enfreint leurs CGU. Brancher ici un fournisseur de données sous licence.
 };
@@ -352,6 +370,164 @@ async function fetchTed(): Promise<LeadRow[]> {
   }
 
   return rows;
+}
+
+// Durées contractuelles les plus fréquentes : la fin d'un marché n'étant pas
+// publiée, elle est estimée par date de notification + durée, et l'API
+// Opendatasoft ne sait pas filtrer sur une date calculée. On interroge donc
+// une fenêtre de notification par durée.
+const DECP_DURATIONS_MONTHS = [12, 24, 36, 48, 60];
+const DECP_HORIZON_MIN_MONTHS = 3;
+const DECP_HORIZON_MAX_MONTHS = 12;
+const DECP_MIN_AMOUNT = 40_000;
+const DECP_MAX_PAGES_PER_DURATION = 5;
+
+/**
+ * Marchés attribués (DECP) dont la fin estimée tombe dans 3 à 12 mois :
+ * ce ne sont pas des appels d'offres ouverts mais des renouvellements à
+ * anticiper. Pagine jusqu'à `ctx.wanted` marchés absents de l'index, puis ne
+ * résout le nom des acheteurs et titulaires que pour ceux-là.
+ */
+async function fetchDecpRenewals(ctx: FetchContext): Promise<LeadRow[]> {
+  // deno-lint-ignore no-explicit-any
+  const fresh: any[] = [];
+  const now = new Date();
+
+  outer: for (let page = 0; page < DECP_MAX_PAGES_PER_DURATION; page++) {
+    let exhausted = 0;
+    for (const months of DECP_DURATIONS_MONTHS) {
+      const from = isoDate(addMonths(now, DECP_HORIZON_MIN_MONTHS - months));
+      const to = isoDate(addMonths(now, DECP_HORIZON_MAX_MONTHS - months));
+      const url = new URL(
+        "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/decp-2022-marches-valides/records",
+      );
+      url.searchParams.set(
+        "where",
+        `dureemois = ${months} and datenotification >= date'${from}' ` +
+          `and datenotification < date'${to}' and montant >= ${DECP_MIN_AMOUNT}`,
+      );
+      // Les échéances les plus proches d'abord : ce sont les plus urgentes.
+      url.searchParams.set("order_by", "datenotification asc");
+      url.searchParams.set("limit", "100");
+      url.searchParams.set("offset", String(page * 100));
+
+      const body = await fetchJson(url);
+      const records = Array.isArray(body?.results) ? body.results : [];
+      if (records.length < 100) exhausted++;
+
+      const candidates = records.filter((r: Record<string, unknown>) => str(r.id) && str(r.acheteur_id));
+      const known = await ctx.knownIds(candidates.map(decpId));
+      for (const r of candidates) {
+        if (!known.has(decpId(r)) && !fresh.some((f) => decpId(f) === decpId(r))) fresh.push(r);
+        if (fresh.length >= ctx.wanted) break outer;
+      }
+    }
+    if (exhausted === DECP_DURATIONS_MONTHS.length) break;
+  }
+
+  const names = new Map<string, string | null>();
+  const rows: LeadRow[] = [];
+  for (const r of fresh) {
+    const buyerSiret = str(r.acheteur_id)!;
+    const winnerSiret = str(r.titulaire_id_1);
+    const buyer = (await companyName(buyerSiret, names)) ?? `Acheteur public (SIRET ${buyerSiret})`;
+    const winner = winnerSiret ? await companyName(winnerSiret, names) : null;
+
+    const notifiedAt = new Date(str(r.datenotification)!);
+    const months = Number(r.dureemois);
+    const endsAt = addMonths(notifiedAt, months);
+    const amount = typeof r.montant === "number" ? r.montant : null;
+    const title = str(r.objet) ?? "Marché public attribué";
+    const winnerLabel = winner ?? (winnerSiret ? `SIRET ${winnerSiret}` : "titulaire non précisé");
+    const endLabel = isoDate(endsAt);
+
+    rows.push({
+      id: decpId(r),
+      source: "decp",
+      title,
+      organization: buyer,
+      summary: excerpt(
+        `Marché attribué à ${winnerLabel}` +
+          (amount ? ` pour ${Math.round(amount).toLocaleString("fr-FR")} € HT` : "") +
+          `, fin estimée le ${endLabel} : renouvellement à anticiper. ${title}`,
+        280,
+      ),
+      content: [
+        `Objet : ${title}`,
+        `Statut : marché ATTRIBUÉ (pas un appel d'offres ouvert) — remise en concurrence probable à l'échéance.`,
+        `Titulaire actuel : ${winnerLabel}`,
+        amount ? `Montant : ${Math.round(amount).toLocaleString("fr-FR")} € HT` : null,
+        `Notifié le : ${isoDate(notifiedAt)} · Durée : ${months} mois · Fin estimée : ${endLabel}`,
+        str(r.procedure) ? `Procédure : ${str(r.procedure)}` : null,
+        str(r.codecpv) ? `Code CPV : ${str(r.codecpv)}` : null,
+        typeof r.offresrecues === "number" ? `Offres reçues : ${r.offresrecues}` : null,
+        str(r.ccag) ? `CCAG : ${str(r.ccag)}` : null,
+      ].filter(Boolean).join("\n"),
+      // Les DECP ne pointent vers aucun avis : la fiche de l'acheteur sur
+      // l'annuaire officiel permet d'identifier le service et ses contacts.
+      source_url: `https://annuaire-entreprises.data.gouv.fr/etablissement/${buyerSiret}`,
+      published_at: notifiedAt.toISOString(),
+      // Réutilise `deadline` pour la fin estimée : le filtre « expiré » du
+      // chat écarte ainsi les marchés déjà échus.
+      deadline: endsAt.toISOString(),
+      estimated_budget: amount,
+      region: decpRegion(r),
+      sector: str(r.ccag),
+    });
+  }
+  return rows;
+}
+
+// deno-lint-ignore no-explicit-any
+function decpId(r: any): string {
+  // L'identifiant DECP n'est unique que par acheteur.
+  return `decp:${str(r.acheteur_id)}:${str(r.id)}`;
+}
+
+function decpRegion(r: Record<string, unknown>): string | null {
+  const code = str(r.lieuexecution_code);
+  const type = str(r.lieuexecution_typecode);
+  if (!code || !type) return null;
+  if (type === "Code département") return `Département ${code}`;
+  if (type === "Code postal" || type === "Code commune") {
+    const dept = code.startsWith("97") ? code.slice(0, 3) : code.slice(0, 2);
+    return `Département ${dept}`;
+  }
+  if (type === "Code région") return `Région ${code}`;
+  return null;
+}
+
+/**
+ * Nom officiel via l'API Recherche d'entreprises (gratuite, sans clé,
+ * ~7 requêtes/s). Repli sur le SIREN : certains établissements publics ne
+ * sont indexés qu'au niveau de l'unité légale.
+ */
+async function companyName(siret: string, cache: Map<string, string | null>): Promise<string | null> {
+  if (cache.has(siret)) return cache.get(siret)!;
+  let name: string | null = null;
+  for (const q of [siret, siret.slice(0, 9)]) {
+    if (!/^\d{9,14}$/.test(q)) break;
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    try {
+      const url = new URL("https://recherche-entreprises.api.gouv.fr/search");
+      url.searchParams.set("q", q);
+      url.searchParams.set("per_page", "1");
+      const body = await fetchJson(url);
+      name = str(body?.results?.[0]?.nom_complet);
+    } catch (error) {
+      // Un nom manquant ne doit pas faire échouer la synchronisation.
+      console.warn(`recherche-entreprises ${q}`, error);
+    }
+    if (name) break;
+  }
+  cache.set(siret, name);
+  return name;
+}
+
+function addMonths(date: Date, months: number): Date {
+  const result = new Date(date);
+  result.setUTCMonth(result.getUTCMonth() + months);
+  return result;
 }
 
 // ---------------------------------------------------------------------------

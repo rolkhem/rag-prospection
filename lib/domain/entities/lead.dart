@@ -2,6 +2,10 @@ import 'package:equatable/equatable.dart';
 
 enum LeadCategory {
   publicTender(label: 'Appel d\'offres public'),
+
+  /// Marché déjà attribué dont l'échéance approche : un renouvellement à
+  /// anticiper, à ne pas présenter comme une consultation ouverte.
+  awardedContract(label: 'Marché attribué (renouvellement)'),
   socialSignal(label: 'Signal réseau social');
 
   const LeadCategory({required this.label});
@@ -12,6 +16,7 @@ enum LeadCategory {
 enum LeadSource {
   boamp(label: 'BOAMP', category: LeadCategory.publicTender),
   ted(label: 'TED', category: LeadCategory.publicTender),
+  decp(label: 'DECP', category: LeadCategory.awardedContract),
   linkedIn(label: 'LinkedIn', category: LeadCategory.socialSignal),
   x(label: 'X', category: LeadCategory.socialSignal);
 
@@ -53,7 +58,9 @@ class Lead extends Equatable {
   final Uri sourceUrl;
   final DateTime publishedAt;
 
-  /// Date limite de remise des offres (appels d'offres uniquement).
+  /// Date limite de remise des offres pour un appel d'offres ; fin estimée
+  /// du marché pour un marché attribué. Dans les deux cas, passée cette
+  /// date le lead n'est plus exploitable.
   final DateTime? deadline;
 
   /// Montant estimé en euros HT, si l'avis le précise.
